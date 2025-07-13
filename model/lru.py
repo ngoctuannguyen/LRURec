@@ -283,27 +283,27 @@ class PositionwiseFeedForward(nn.Module):
 #         return self.model(x, self.embedding.token.weight, mask, labels=labels)
 
 
-class LRUEmbedding(nn.Module):
-    def __init__(self, args):
-        super().__init__()
-        vocab_size = args.num_items + 1
-        embed_size = args.bert_hidden_units
+# class LRUEmbedding(nn.Module):
+#     def __init__(self, args):
+#         super().__init__()
+#         vocab_size = args.num_items + 1
+#         embed_size = args.bert_hidden_units
         
-        self.token = nn.Embedding(vocab_size, embed_size)
-        self.layer_norm = nn.LayerNorm(embed_size)
-        self.embed_dropout = nn.Dropout(args.bert_dropout)
-        self.positional_embedding = nn.Embedding(vocab_size, embed_size)
+#         self.token = nn.Embedding(vocab_size, embed_size)
+#         self.layer_norm = nn.LayerNorm(embed_size)
+#         self.embed_dropout = nn.Dropout(args.bert_dropout)
+#         self.positional_embedding = nn.Embedding(vocab_size, embed_size)
 
-    def get_mask(self, x):
-        return (x > 0)
+#     def get_mask(self, x):
+#         return (x > 0)
 
-    def forward(self, x):
-        mask = self.get_mask(x)
-        seq_len = x.size(1)
-        position_ids = torch.arange(seq_len, dtype=torch.long, device=x.device).unsqueeze(0) 
-        position_emb = self.positional_embedding(position_ids)
-        x = self.token(x) + position_emb
-        return self.layer_norm(self.embed_dropout(x)), mask
+#     def forward(self, x):
+#         mask = self.get_mask(x)
+#         seq_len = x.size(1)
+#         position_ids = torch.arange(seq_len, dtype=torch.long, device=x.device).unsqueeze(0) 
+#         position_emb = self.positional_embedding(position_ids)
+#         x = self.token(x) + position_emb
+#         return self.layer_norm(self.embed_dropout(x)), mask
 
 
 # class LRUModel(nn.Module):
@@ -482,70 +482,70 @@ class LRUEmbedding(nn.Module):
 #         x, mask = self.embedding(x)
 #         return self.model(x, self.embedding.token.weight, mask, labels=labels)
 
-# class RoPE(nn.Module):
-#     def __init__(self, seq_len, d_model, base=10000):
-#         super().__init__()
-#         assert d_model % 2 == 0, "d_model must be even for RoPE complex representation"
-#         half_dim = d_model // 2
+class RoPE(nn.Module):
+    def __init__(self, seq_len, d_model, base=10000):
+        super().__init__()
+        assert d_model % 2 == 0, "d_model must be even for RoPE complex representation"
+        half_dim = d_model // 2
 
-#         # Compute thetas
-#         theta = 1.0 / (base ** (torch.arange(0, half_dim, dtype=torch.float32) / half_dim))  # [half_dim]
-#         position = torch.arange(0, seq_len, dtype=torch.float32).unsqueeze(1)                # [seq_len, 1]
-#         angles = position * theta                                                            # [seq_len, half_dim]
+        # Compute thetas
+        theta = 1.0 / (base ** (torch.arange(0, half_dim, dtype=torch.float32) / half_dim))  # [half_dim]
+        position = torch.arange(0, seq_len, dtype=torch.float32).unsqueeze(1)                # [seq_len, 1]
+        angles = position * theta                                                            # [seq_len, half_dim]
 
-#         # Encode with sin/cos
-#         cos = torch.cos(angles)  # [seq_len, half_dim]
-#         sin = torch.sin(angles)  # [seq_len, half_dim]
+        # Encode with sin/cos
+        cos = torch.cos(angles)  # [seq_len, half_dim]
+        sin = torch.sin(angles)  # [seq_len, half_dim]
 
-#         # Register as buffer
-#         self.register_buffer("cos", cos)
-#         self.register_buffer("sin", sin)
+        # Register as buffer
+        self.register_buffer("cos", cos)
+        self.register_buffer("sin", sin)
 
-#     def forward(self, x):
-#         """
-#         x: [batch_size, seq_len, d_model] where d_model % 2 == 0
-#         returns: same shape with RoPE positional encoding applied
-#         """
-#         B, L, D = x.shape
-#         assert D % 2 == 0, "d_model must be even"
-#         half_dim = D // 2
+    def forward(self, x):
+        """
+        x: [batch_size, seq_len, d_model] where d_model % 2 == 0
+        returns: same shape with RoPE positional encoding applied
+        """
+        B, L, D = x.shape
+        assert D % 2 == 0, "d_model must be even"
+        half_dim = D // 2
 
-#         x1 = x[:, :, :half_dim]
-#         x2 = x[:, :, half_dim:]
+        x1 = x[:, :, :half_dim]
+        x2 = x[:, :, half_dim:]
 
-#         # Get positional embeddings
-#         cos = self.cos[:L].unsqueeze(0).to(x.device)  # [1, L, half_dim]
-#         sin = self.sin[:L].unsqueeze(0).to(x.device)  # [1, L, half_dim]
+        # Get positional embeddings
+        cos = self.cos[:L].unsqueeze(0).to(x.device)  # [1, L, half_dim]
+        sin = self.sin[:L].unsqueeze(0).to(x.device)  # [1, L, half_dim]
 
-#         # RoPE rotation
-#         x_rotated = torch.cat([
-#             x1 * cos - x2 * sin,
-#             x1 * sin + x2 * cos
-#         ], dim=-1)
+        # RoPE rotation
+        x_rotated = torch.cat([
+            x1 * cos - x2 * sin,
+            x1 * sin + x2 * cos
+        ], dim=-1)
 
-#         return x_rotated
+        return x_rotated
 
-# class LRUEmbedding(nn.Module):
-#     def __init__(self, args):
-#         super().__init__()
-#         vocab_size = args.num_items + 1
-#         embed_size = args.bert_hidden_units
+class LRUEmbedding(nn.Module):
+    def __init__(self, args):
+        super().__init__()
+        vocab_size = args.num_items + 1
+        embed_size = args.bert_hidden_units
         
-#         self.token = nn.Embedding(vocab_size, embed_size)
-#         # self.positional_embedding = nn.Embedding(vocab_size, embed_size)
-#         self.rope = RoPE(vocab_size, embed_size)
-#         self.layer_norm = nn.LayerNorm(embed_size)
-#         self.embed_dropout = nn.Dropout(args.bert_dropout)
+        self.token = nn.Embedding(vocab_size, embed_size)
+        # self.positional_embedding = nn.Embedding(vocab_size, embed_size)
+        self.rope = RoPE(vocab_size, embed_size)
+        self.layer_norm = nn.LayerNorm(embed_size)
+        self.embed_dropout = nn.Dropout(args.bert_dropout)
 
-#     def get_mask(self, x):
-#         return (x > 0)
+    def get_mask(self, x):
+        return (x > 0)
 
-#     def forward(self, x):
-#         mask = self.get_mask(x)
-#         tok_embed = self.token(x)
-#         pos_embed = self.rope(tok_embed)
-#         x = tok_embed + pos_embed  # có thể chỉ dùng pos_embed cũng được nếu đã tính trong RoPE
-#         return self.layer_norm(self.embed_dropout(x)), mask
+    def forward(self, x):
+        mask = self.get_mask(x)
+        tok_embed = self.token(x)
+        pos_embed = self.rope(tok_embed)
+        x = tok_embed + pos_embed  # có thể chỉ dùng pos_embed cũng được nếu đã tính trong RoPE
+        return self.layer_norm(self.embed_dropout(x)), mask
 
 # class LRUModel(nn.Module):
 #     def __init__(self, args):
