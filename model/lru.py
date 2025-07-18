@@ -65,6 +65,24 @@ class RoPE(nn.Module):
         pe_x = rotations_complex * x_complex
         return torch.view_as_real(pe_x).reshape(batch_size, seq_len, d_model)
 
+class MRLSquareLinearLayer(nn.Module):
+    def __init__(self, mrl_hidden_sizes, use_bias=False):
+        super().__init__()
+        self.input_sizes = mrl_hidden_sizes
+        self.output_sizes = [mrl_hidden_sizes[0]]
+        self.output_sizes += [mrl_hidden_sizes[i] - mrl_hidden_sizes[i-1] 
+                              for i in range(1, len(mrl_hidden_sizes))]
+        for i, (in_size, out_size) in enumerate(zip(self.input_sizes, self.output_sizes)):
+            setattr(self, f"mrl_linear_{i}", nn.Linear(in_size, out_size, bias=use_bias))
+
+    def forward(self, hidden_states):
+        nesting_logits = []
+        for i, in_size in enumerate(self.input_sizes):
+            linear = getattr(self, f"mrl_linear_{i}")
+            # Always take the last in_features for each linear layer
+            x = hidden_states[..., -linear.in_features:]
+            nesting_logits.append(linear(x))
+        return torch.cat(nesting_logits, dim=-1)
 # class LRUEmbedding(nn.Module):
 #     def __init__(self, args):
 #         super().__init__()
@@ -158,7 +176,12 @@ class LRUBlock(nn.Module):
         self.lru_layer = LRULayer(
             d_model=hidden_size, dropout=args.bert_attn_dropout)
         self.feed_forward = PositionwiseFeedForward(
-            d_model=hidden_size, d_ff=hidden_size*4, dropout=args.bert_dropout)
+            args,
+            mrl_hidden_sizes=args.mrl_hidden_sizes,
+            # use_bias=args.lru_use_bias, 
+            use_bias=True,
+            dropout=args.bert_dropout
+        )
     
     def forward(self, x, mask):
         x = self.lru_layer(x, mask)
@@ -226,18 +249,42 @@ class LRULayer(nn.Module):
     
 
 class PositionwiseFeedForward(nn.Module):
-    def __init__(self, d_model, d_ff, dropout=0.1):
+    def __init__(self, args, mrl_hidden_sizes, use_bias=False, dropout=0.1):
         super().__init__()
-        self.w_1 = nn.Linear(d_model, d_ff)
-        self.w_2 = nn.Linear(d_ff, d_model)
-        self.activation = nn.GELU()
-        # self.activation = nn.SiLU()
+        self.args = args
+        self.gate = MRLSquareLinearLayer(mrl_hidden_sizes, use_bias=use_bias)
+        self.w_1 = MRLSquareLinearLayer(mrl_hidden_sizes, use_bias=use_bias)
+        self.w_2 = MRLSquareLinearLayer(mrl_hidden_sizes, use_bias=use_bias)
+        self.activation = nn.SiLU()
         self.dropout = nn.Dropout(dropout)
-        self.layer_norm = nn.LayerNorm(d_model)
 
     def forward(self, x):
-        x_ = self.dropout(self.activation(self.w_1(x)))
-        return self.layer_norm(self.dropout(self.w_2(x_)) + x)
+        gate_ = self.gate(x)
+        x_ = self.dropout(self.w_1(x))
+        return self.dropout(self.w_2(self.activation(gate_) * x_))
+    
+
+class MRLSquareLinearLayer(nn.Module):
+    def __init__(self, mrl_hidden_sizes, use_bias=False):
+        super().__init__()
+        self.input_sizes = mrl_hidden_sizes
+        self.output_sizes = [mrl_hidden_sizes[0]]
+        self.output_sizes += [mrl_hidden_sizes[i] - mrl_hidden_sizes[i-1] 
+                              for i in range(1, len(mrl_hidden_sizes))]
+        for i, (in_size, out_size) in enumerate(zip(self.input_sizes, self.output_sizes)):
+            setattr(self, f"mrl_linear_{i}", nn.Linear(in_size, out_size, bias=use_bias))
+
+    def forward(self, hidden_states):
+        nesting_logits = []
+        for i, in_size in enumerate(self.input_sizes):
+            # Only use the last in_size features for each layer
+            x = hidden_states[..., :in_size]
+            linear = getattr(self, f"mrl_linear_{i}")
+            # Ensure input shape matches Linear's in_features
+            if x.shape[-1] != linear.in_features:
+                x = hidden_states[..., -linear.in_features:]
+            nesting_logits.append(linear(x))
+        return torch.cat(nesting_logits, dim=-1)
     
 
 ### LRU PE

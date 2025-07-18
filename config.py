@@ -64,6 +64,7 @@ def set_template(args):
     args.bert_num_blocks = 2
     args.bert_num_heads = 2
     args.bert_head_size = None
+    args.mrl_hidden_sizes = [int(size) for size in args.mrl_hidden_sizes.split(',')]
 
 
 parser = argparse.ArgumentParser()
@@ -130,6 +131,7 @@ parser.add_argument('--bert_head_size', type=int, default=32)
 parser.add_argument('--bert_dropout', type=float, default=None)
 parser.add_argument('--bert_attn_dropout', type=float, default=None)
 parser.add_argument('--bert_mask_prob', type=float, default=None)
+parser.add_argument('--mrl_hidden_sizes', type=str, default="8,16,32,64,128,256,512,1024")
 
 ################
 
