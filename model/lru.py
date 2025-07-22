@@ -39,31 +39,31 @@ class LRU(nn.Module):
         x, mask = self.embedding(x)
         return self.model(x, self.embedding.token.weight, mask, labels=labels)
 
-class RoPE(nn.Module):
-    def __init__(self, seq_len, d_model, base=10000):
-        super().__init__()
+# class RoPE(nn.Module):
+#     def __init__(self, seq_len, d_model, base=10000):
+#         super().__init__()
 
-        k_max = d_model // 2
-        theta = 1 / (base ** (torch.arange(k_max) / k_max))
-        angles = torch.outer(torch.arange(seq_len), theta)
+#         k_max = d_model // 2
+#         theta = 1 / (base ** (torch.arange(k_max) / k_max))
+#         angles = torch.outer(torch.arange(seq_len), theta)
 
-        rotations_re = torch.cos(angles).unsqueeze(dim=-1)
-        rotations_im = torch.sin(angles).unsqueeze(dim=-1)
-        rotations = torch.cat([rotations_re, rotations_im], dim=-1)  # [seq_len, k_max, 2]
-        rotations = rotations.reshape(seq_len, -1)  # [seq_len, d_model]
-        self.register_buffer('rotations', rotations)
+#         rotations_re = torch.cos(angles).unsqueeze(dim=-1)
+#         rotations_im = torch.sin(angles).unsqueeze(dim=-1)
+#         rotations = torch.cat([rotations_re, rotations_im], dim=-1)  # [seq_len, k_max, 2]
+#         rotations = rotations.reshape(seq_len, -1)  # [seq_len, d_model]
+#         self.register_buffer('rotations', rotations)
 
-    def forward(self, x):
-        # x: [batch_size, seq_len, d_model]
-        if x.dtype != torch.float32:
-            x = x.to(torch.float32)
-        batch_size, seq_len, d_model = x.shape
-        rotations = self.rotations[:seq_len]  # [seq_len, d_model]
-        rotations = rotations.unsqueeze(0).expand(batch_size, -1, -1)  # [batch_size, seq_len, d_model]
-        x_complex = torch.view_as_complex(x.reshape(*x.shape[:-1], -1, 2))
-        rotations_complex = torch.view_as_complex(rotations.reshape(*rotations.shape[:-1], -1, 2))
-        pe_x = rotations_complex * x_complex
-        return torch.view_as_real(pe_x).reshape(batch_size, seq_len, d_model)
+#     def forward(self, x):
+#         # x: [batch_size, seq_len, d_model]
+#         if x.dtype != torch.float32:
+#             x = x.to(torch.float32)
+#         batch_size, seq_len, d_model = x.shape
+#         rotations = self.rotations[:seq_len]  # [seq_len, d_model]
+#         rotations = rotations.unsqueeze(0).expand(batch_size, -1, -1)  # [batch_size, seq_len, d_model]
+#         x_complex = torch.view_as_complex(x.reshape(*x.shape[:-1], -1, 2))
+#         rotations_complex = torch.view_as_complex(rotations.reshape(*rotations.shape[:-1], -1, 2))
+#         pe_x = rotations_complex * x_complex
+#         return torch.view_as_real(pe_x).reshape(batch_size, seq_len, d_model)
 
 # class LRUEmbedding(nn.Module):
 #     def __init__(self, args):
@@ -225,19 +225,35 @@ class LRULayer(nn.Module):
         return self.layer_norm(x)  # residual connection introduced above 
     
 
+class SwiGLU(nn.Module):
+    def __init__(self, in_features, out_features):
+        super().__init__()
+        self.linear1 = nn.Linear(in_features, out_features * 2)
+        self.linear2 = nn.Linear(in_features, out_features)
+    
+    def forward(self, x):
+        hidden_states = self.linear1(x)
+        gate, activated = hidden_states.chunk(2, dim=-1)
+        activated = F.silu(activated)
+        output = self.linear2(gate * activated)
+        return output
+
+
 class PositionwiseFeedForward(nn.Module):
     def __init__(self, d_model, d_ff, dropout=0.1):
         super().__init__()
-        self.w_1 = nn.Linear(d_model, d_ff)
+        self.w_1 = nn.Linear(d_model, d_ff * 2)  # *2 cho SwiGLU
         self.w_2 = nn.Linear(d_ff, d_model)
-        # self.activation = nn.GELU()
-        self.activation = nn.SiLU()
         self.dropout = nn.Dropout(dropout)
         self.layer_norm = nn.LayerNorm(d_model)
 
     def forward(self, x):
-        x_ = self.dropout(self.activation(self.w_1(x)))
-        return self.layer_norm(self.dropout(self.w_2(x_)) + x)
+        x_proj = self.w_1(x)  # [B, L, d_ff*2]
+        gate, act = x_proj.chunk(2, dim=-1)
+        act = F.silu(act)
+        x_ = self.dropout(gate * act)
+        x_ = self.dropout(self.w_2(x_))
+        return self.layer_norm(x_ + x)
     
 
 ### LRU PE
