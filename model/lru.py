@@ -157,12 +157,12 @@ class LRUBlock(nn.Module):
         hidden_size = args.bert_hidden_units
         self.lru_layer = LRULayer(
             d_model=hidden_size, dropout=args.bert_attn_dropout)
-        self.feed_forward = PositionwiseFeedForward(
-            d_model=hidden_size, d_ff=hidden_size*4, dropout=args.bert_dropout)
+        # self.feed_forward = PositionwiseFeedForward(
+            # d_model=hidden_size, d_ff=hidden_size*4, dropout=args.bert_dropout)
     
     def forward(self, x, mask):
         x = self.lru_layer(x, mask)
-        x = self.feed_forward(x)
+        # x = self.feed_forward(x)
         return x
     
 
