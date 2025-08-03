@@ -316,7 +316,8 @@ class LRUEmbedding(nn.Module):
         mask = self.get_mask(x)
         seq_len = x.size(1)
         position_ids = torch.arange(seq_len, dtype=torch.long, device=x.device).unsqueeze(0) 
-        position_emb = self.positional_embedding(position_ids)
+        position_emb = 0
+        # self.positional_embedding(position_ids)
         x = self.token(x) + position_emb
         return self.layer_norm(self.embed_dropout(x)), mask
 
