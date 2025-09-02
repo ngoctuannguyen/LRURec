@@ -220,4 +220,5 @@ class PositionwiseFeedForward(nn.Module):
         act = F.silu(act)
         x_ = self.dropout(gate * act)
         x_ = self.dropout(self.w_2(x_))
-        return self.layer_norm(x_ + x)
+        x_2 = x + x_
+        return self.layer_norm(self.dropout(self.layer_norm(self.dropout(x_2)) + self.layer_norm(self.dropout(x_2))))
