@@ -14,7 +14,7 @@ class LRU(nn.Module):
         self.truncated_normal_init()
         cat_emb = torch.load(f'./data/{args.dataset_code}/cat.pt').float()
         self.cat_embedding = nn.Embedding.from_pretrained(cat_emb)
-        self.cat_linear = nn.Linear(2 * args.bert_hidden_units, cat_emb.shape[-1])
+        self.cat_linear = nn.Linear(args.bert_hidden_units, cat_emb.shape[-1])
         txt_emb = torch.load(f'./data/{args.dataset_code}/txt_embeddings.pt').float()
         self.txt_embedding = nn.Embedding.from_pretrained(txt_emb)
         self.txt_linear = nn.Linear(txt_emb.shape[-1], args.bert_hidden_units)
@@ -173,20 +173,17 @@ class LRULayer(nn.Module):
         t = torch.arange(L, device=u_c.device).view(1, L, 1)
         k_c = lamb ** t  # (1,L,D) complex
 
-        # chọn length FFT = pow2 >= 2L-1
+        # length FFT = pow2 >= 2L-1
         N = 1 << (2*L - 1).bit_length()
 
-        # vì u_c, k_c là complex nên phải dùng fft
         U = torch.fft.fft(F.pad(u_c, (0, 0, 0, N - L)), n=N, dim=1)
         K = torch.fft.fft(F.pad(k_c, (0, 0, 0, N - L)), n=N, dim=1)
 
-        # convolution trong miền tần số
         Y = torch.fft.ifft(U * K, n=N, dim=1)
 
         return Y[:, :L, :]
 
     def forward(self, x, mask):
-        # 1. Tham số hóa
         nu, theta, gamma = torch.exp(self.params_log).split((1, 1, 1))
         lamb = torch.exp(torch.complex(-nu, theta))  # (1,1,D)
 

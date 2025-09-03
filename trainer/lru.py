@@ -46,11 +46,11 @@ class LRUTrainer(BaseTrainer):
         nonzero_idx = torch.where(input != padding_idx)
         # print("Non zero index", nonzero_idx)
         item_emb = self.model.embedding(item_list)[0]
-        txt_emb = self.model.txt_embedding(item_list)
-        txt_emb = self.model.txt_linear(txt_emb)
+        # txt_emb = self.model.txt_embedding(item_list)
+        # txt_emb = self.model.txt_linear(txt_emb)
         # print(item_emb.shape)
         # print("Cat Embedding:", torch.cat([item_emb], dim=-1))
-        item_attribute_score = self.model.cat_linear(torch.cat([item_emb, txt_emb], dim=-1))
+        item_attribute_score = self.model.cat_linear(item_emb)
         item_attribute_target = self.model.cat_embedding(item_list)
         attr_loss = self.bce(item_attribute_score[nonzero_idx], item_attribute_target[nonzero_idx])
         return attr_loss
