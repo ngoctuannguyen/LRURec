@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 import numpy as np
-
+from pytorch_wavelets import DWT1D, IDWT1D
 
 class LRU(nn.Module):
     def __init__(self, args):
@@ -138,67 +138,55 @@ class LRULayer(nn.Module):
                  d_model,
                  dropout=0.1,
                  use_bias=True,
-                 r_min=0.8,
-                 r_max=0.99):
+                 wave='db2',  # Daubechies-2 wavelet
+                 levels=3):   # decomposition levels
         super().__init__()
         self.embed_size = d_model
         self.hidden_size = 2 * d_model
         self.use_bias = use_bias
 
-        # init nu, theta, gamma
-        u1 = torch.rand(self.hidden_size)
-        u2 = torch.rand(self.hidden_size)
-        nu_log = torch.log(-0.5 * torch.log(u1 * (r_max ** 2 - r_min ** 2) + r_min ** 2))
-        theta_log = torch.log(u2 * torch.tensor(np.pi) * 2)
-        diag_lambda = torch.exp(torch.complex(-torch.exp(nu_log), torch.exp(theta_log)))
-        gamma_log = torch.log(torch.sqrt(1 - torch.abs(diag_lambda) ** 2))
-        self.params_log = nn.Parameter(torch.vstack((nu_log, theta_log, gamma_log)))
+        # wavelet transforms
+        self.dwt = DWT1D(wave=wave, J=levels)   # decomposition
+        self.idwt = IDWT1D(wave=wave)           # reconstruction
 
-        # Init B, C, D
+        # Projections
         self.in_proj = nn.Linear(self.embed_size, self.hidden_size, bias=use_bias).to(torch.cfloat)
         self.out_proj = nn.Linear(self.hidden_size, self.embed_size, bias=use_bias).to(torch.cfloat)
         self.out_vector = nn.Identity()
 
-        # Dropout and layer norm
         self.dropout = nn.Dropout(p=dropout)
         self.layer_norm = nn.LayerNorm(self.embed_size)
 
-    def fft_causal_conv(self, u_c, lamb, L):
+    def dwt_conv(self, h, mask):
         """
-        u_c: (B, L, D) complex
-        lamb: (1, 1, D) complex
+        h: (B, L, D) complex
         """
-        B, _, D = u_c.shape
-        # kernel k[t] = lamb^t
-        t = torch.arange(L, device=u_c.device).view(1, L, 1)
-        k_c = lamb ** t  # (1,L,D) complex
-
-        # length FFT = pow2 >= 2L-1
-        N = 1 << (2*L - 1).bit_length()
-
-        U = torch.fft.fft(F.pad(u_c, (0, 0, 0, N - L)), n=N, dim=1)
-        K = torch.fft.fft(F.pad(k_c, (0, 0, 0, N - L)), n=N, dim=1)
-
-        Y = torch.fft.ifft(U * K, n=N, dim=1)
-
-        return Y[:, :L, :]
+        B, L, D = h.shape
+        outputs = []
+        for d in range(D):
+            x = h[:, :, d].real  # take real part for wavelet
+            # Apply DWT
+            yl, yh = self.dwt(x.unsqueeze(1))  # (B,1,L)->yl(low), yh(details)
+            # Process in wavelet domain (optional: learn filters)
+            yl_ = yl  # keep low-pass
+            yh_ = [d for d in yh]  # keep details
+            # Reconstruct
+            recon = self.idwt((yl_, yh_)).squeeze(1)  # (B,L)
+            outputs.append(recon)
+        return torch.stack(outputs, dim=-1).to(h.dtype)  # (B,L,D)
 
     def forward(self, x, mask):
-        nu, theta, gamma = torch.exp(self.params_log).split((1, 1, 1))
-        lamb = torch.exp(torch.complex(-nu, theta))  # (1,1,D)
+        # In projection
+        h = self.in_proj(x.to(torch.cfloat))
 
-        # 2. In projection (complex) và nhân gamma
-        h = self.in_proj(x.to(torch.cfloat)) * gamma
-
-        # 3. Zero-out masked timesteps
+        # Mask
         if mask is not None:
             h = h * mask.unsqueeze(-1).to(h.dtype)
 
-        # 4. FFT causal convolution
-        L = h.size(1)
-        h_c = self.fft_causal_conv(h, lamb, L)
+        # Replace FFT conv with DWT transform + recon
+        h_c = self.dwt_conv(h, mask)
 
-        # 5. Out projection và residual
+        # Out proj + residual
         x = self.dropout(self.out_proj(h_c).real) + self.out_vector(x)
         return self.layer_norm(x)
     
@@ -214,7 +202,6 @@ class SwiGLU(nn.Module):
         activated = F.silu(activated)
         output = self.linear2(gate * activated)
         return output
-
 
 class PositionwiseFeedForward(nn.Module):
     def __init__(self, d_model, d_ff, dropout=0.1):
