@@ -157,39 +157,53 @@ class LRULayer(nn.Module):
         # Init B, C, D
         self.in_proj = nn.Linear(self.embed_size, self.hidden_size, bias=use_bias).to(torch.cfloat)
         self.out_proj = nn.Linear(self.hidden_size, self.embed_size, bias=use_bias).to(torch.cfloat)
-        # self.out_vector = nn.Parameter(torch.rand(self.embed_size))
         self.out_vector = nn.Identity()
-        
+
         # Dropout and layer norm
         self.dropout = nn.Dropout(p=dropout)
         self.layer_norm = nn.LayerNorm(self.embed_size)
 
-    def lru_parallel(self, i, h, lamb, mask, B, L, D):
-        # Parallel algorithm, see: https://kexue.fm/archives/9554#%E5%B9%B6%E8%A1%8C%E5%8C%96
-        # The original implementation is slightly slower and does not consider 0 padding
-        l = 2 ** i
-        h = h.reshape(B * L // l, l, D)  # (B, L, D) -> (B * L // 2, 2, D)
-        mask_ = mask.reshape(B * L // l, l)  # (B, L) -> (B * L // 2, 2)
-        h1, h2 = h[:, :l // 2], h[:, l // 2:]  # Divide data in half
+    def fft_causal_conv(self, u_c, lamb, L):
+        """
+        u_c: (B, L, D) complex
+        lamb: (1, 1, D) complex
+        """
+        B, _, D = u_c.shape
+        # kernel k[t] = lamb^t
+        t = torch.arange(L, device=u_c.device).view(1, L, 1)
+        k_c = lamb ** t  # (1,L,D) complex
 
-        if i > 1: lamb = torch.cat((lamb, lamb * lamb[-1]), 0)
-        h2 = h2 + lamb * h1[:, -1:] * mask_[:, l // 2 - 1:l // 2].unsqueeze(-1)
-        h = torch.cat([h1, h2], axis=1)
-        return h, lamb
+        # chọn length FFT = pow2 >= 2L-1
+        N = 1 << (2*L - 1).bit_length()
+
+        # vì u_c, k_c là complex nên phải dùng fft
+        U = torch.fft.fft(F.pad(u_c, (0, 0, 0, N - L)), n=N, dim=1)
+        K = torch.fft.fft(F.pad(k_c, (0, 0, 0, N - L)), n=N, dim=1)
+
+        # convolution trong miền tần số
+        Y = torch.fft.ifft(U * K, n=N, dim=1)
+
+        return Y[:, :L, :]
 
     def forward(self, x, mask):
-        # compute bu and lambda
+        # 1. Tham số hóa
         nu, theta, gamma = torch.exp(self.params_log).split((1, 1, 1))
-        lamb = torch.exp(torch.complex(-nu, theta))
-        h = self.in_proj(x.to(torch.cfloat)) * gamma  # bu
-        
-        # compute h in parallel
-        log2_L = int(np.ceil(np.log2(h.size(1))))
-        B, L, D = h.size(0), h.size(1), h.size(2)
-        for i in range(log2_L):
-            h, lamb = self.lru_parallel(i + 1, h, lamb, mask, B, L, D)
-        x = self.dropout(self.out_proj(h).real) + self.out_vector(x)
-        return self.layer_norm(x)  # residual connection introduced above 
+        lamb = torch.exp(torch.complex(-nu, theta))  # (1,1,D)
+
+        # 2. In projection (complex) và nhân gamma
+        h = self.in_proj(x.to(torch.cfloat)) * gamma
+
+        # 3. Zero-out masked timesteps
+        if mask is not None:
+            h = h * mask.unsqueeze(-1).to(h.dtype)
+
+        # 4. FFT causal convolution
+        L = h.size(1)
+        h_c = self.fft_causal_conv(h, lamb, L)
+
+        # 5. Out projection và residual
+        x = self.dropout(self.out_proj(h_c).real) + self.out_vector(x)
+        return self.layer_norm(x)
     
 class SwiGLU(nn.Module):
     def __init__(self, in_features, out_features):
