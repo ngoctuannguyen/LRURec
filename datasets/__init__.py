@@ -4,6 +4,7 @@ from .video import VideoDataset
 from .sports import SportsDataset
 from .steam import SteamDataset
 from .xlong import XLongDataset
+from .games import GamesDataset
 
 
 DATASETS = {
@@ -13,6 +14,7 @@ DATASETS = {
     SportsDataset.code(): SportsDataset,
     SteamDataset.code(): SteamDataset,
     XLongDataset.code(): XLongDataset,
+    GamesDataset.code(): GamesDataset,
 }
 
 

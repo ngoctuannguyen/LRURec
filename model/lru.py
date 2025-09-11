@@ -207,7 +207,6 @@ class SwiGLU(nn.Module):
 class PositionwiseFeedForward(nn.Module):
     def __init__(self, d_model, d_ff, dropout=0.1):
         super().__init__()
-        # multiplied by 2 because of chunking to get gate and activation
         self.w_1 = nn.Linear(d_model, d_ff * 2)
         self.w_2 = nn.Linear(d_ff, d_model)
         self.dropout = nn.Dropout(dropout)
