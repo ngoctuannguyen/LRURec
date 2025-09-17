@@ -14,7 +14,7 @@ class LRU(nn.Module):
         self.truncated_normal_init()
         cat_emb = torch.load(f'./data/{args.dataset_code}/cat.pt').float()
         self.cat_embedding = nn.Embedding.from_pretrained(cat_emb).to(args.device)
-        self.cat_linear = nn.Linear(2 * args.bert_hidden_units, cat_emb.shape[-1])
+        self.cat_linear = nn.Linear(args.bert_hidden_units, cat_emb.shape[-1])
         txt_emb = torch.load(f'./data/{args.dataset_code}/txt_embeddings.pt').float()
         self.txt_embedding = nn.Embedding.from_pretrained(txt_emb).to(args.device)
         self.txt_linear = nn.Linear(txt_emb.shape[-1], args.bert_hidden_units)
