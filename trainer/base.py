@@ -226,6 +226,9 @@ class BaseTrainer(metaclass=ABCMeta):
                 MetricGraphPrinter(key='NDCG@%d' % k, graph_name='NDCG@%d' % k, group_name='Validation', use_wandb=self.use_wandb))
             val_loggers.append(
                 MetricGraphPrinter(key='MRR@%d' % k, graph_name='MRR@%d' % k, group_name='Validation', use_wandb=self.use_wandb))
+            val_loggers.append(
+                MetricGraphPrinter(key='HR@%d' % k, graph_name='HR@%d' % k, group_name='Validation', use_wandb=self.use_wandb))
+
 
         val_loggers.append(RecentModelLogger(self.args, model_checkpoint))
         val_loggers.append(BestModelLogger(self.args, model_checkpoint, metric_key=self.best_metric))
