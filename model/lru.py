@@ -45,7 +45,7 @@ class LRU(nn.Module):
                         p.add_(mean)
 
     def forward(self, x, labels=None):
-        x, mask = self.embedding(x)
+        x, mask, pos_emb = self.embedding(x)
         return self.model(x, self.embedding.token.weight, mask, labels=labels)
 
 class LRUEmbedding(nn.Module):
@@ -65,9 +65,10 @@ class LRUEmbedding(nn.Module):
     def forward(self, x):
         mask = self.get_mask(x)                   
         positional_ids = torch.cumsum(mask, dim=1)   
-        positional_ids = positional_ids * mask       
-        x = self.token(x) + self.positional_embedding(positional_ids)
-        return self.layer_norm(self.embed_dropout(x)), mask
+        positional_ids = positional_ids * mask  
+        pos_emb = self.positional_embedding(positional_ids)
+        x = self.token(x) + pos_emb
+        return self.layer_norm(self.embed_dropout(x)), mask, pos_emb
 
 class LRUModel(nn.Module):
     def __init__(self, args):
@@ -128,7 +129,7 @@ class LRUBlock(nn.Module):
     
     def forward(self, x, mask):
         x = self.lru_layer(x, mask)
-        # x = self.feed_forward(x)
+        x = self.feed_forward(x)
         return x
     
 
@@ -207,15 +208,12 @@ class SwiGLU(nn.Module):
 class PositionwiseFeedForward(nn.Module):
     def __init__(self, d_model, d_ff, dropout=0.1):
         super().__init__()
-        self.w_1 = nn.Linear(d_model, d_ff * 2)
+        self.w_1 = nn.Linear(d_model, d_ff)
         self.w_2 = nn.Linear(d_ff, d_model)
         self.dropout = nn.Dropout(dropout)
         self.layer_norm = nn.LayerNorm(d_model)
+        self.activation = nn.GELU()
 
     def forward(self, x):
-        x_proj = self.w_1(x)  # [B, L, d_ff*2]
-        gate, act = x_proj.chunk(2, dim=-1)
-        act = F.silu(act)
-        x_ = self.dropout(gate * act)
-        x_ = self.dropout(self.w_2(x_))
-        return self.layer_norm(x_ + x)
+        x_ = self.dropout(self.activation(self.w_1(x)))
+        return self.layer_norm(self.dropout(self.w_2(x_)) + x)
