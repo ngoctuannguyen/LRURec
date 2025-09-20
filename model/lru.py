@@ -212,7 +212,7 @@ class PositionwiseFeedForward(nn.Module):
         self.w_2 = nn.Linear(d_ff, d_model)
         self.dropout = nn.Dropout(dropout)
         self.layer_norm = nn.LayerNorm(d_model)
-        self.activation = nn.GELU()
+        self.activation = nn.SiLU()
 
     def forward(self, x):
         x_ = self.dropout(self.activation(self.w_1(x)))
