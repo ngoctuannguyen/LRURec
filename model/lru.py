@@ -61,12 +61,40 @@ class LRUEmbedding(nn.Module):
 
     def get_mask(self, x):
         return (x > 0)
+
+    def theta(self, pe, positional_ids):
+        i_over_d = 2 * positional_ids / float(4096)
+
+        factors = torch.pow(10000.0, i_over_d).unsqueeze(-1)
+
+        return pe / factors * (2.0 * math.pi)
+       
+    def sincos_matrix(self, pe, positional_ids):
+        
+        batch, seq_len, d_model = pe.shape
+        device = pe.device
     
+        theta_val = self.theta(pe, positional_ids)
+    
+        even_mask = (positional_ids % 2 == 0).unsqueeze(-1)
+        odd_mask  = ~even_mask
+    
+        result = torch.empty_like(theta_val)
+    
+        # (-1)^i * sin(theta)
+        i = positional_ids.unsqueeze(-1).expand_as(theta_val)
+        sign = torch.where(i % 2 == 0, torch.ones_like(i), -torch.ones_like(i))
+        result[even_mask.expand_as(theta_val)] = sign[even_mask.expand_as(theta_val)] * torch.sin(theta_val[even_mask.expand_as(theta_val)])
+        result[odd_mask.expand_as(theta_val)]  = torch.cos(theta_val[odd_mask.expand_as(theta_val)])
+    
+        return result
+        
     def forward(self, x):
         mask = self.get_mask(x)                   
         positional_ids = torch.cumsum(mask, dim=1)   
         positional_ids = positional_ids * mask
-        pos_emb = self.positional_embedding(positional_ids)      
+        pos_emb = self.positional_embedding(positional_ids)  
+        pos_emb = self.sincos_matrix(pos_emb, positional_ids)
         x = self.token(x) + pos_emb
         return self.layer_norm(self.embed_dropout(x)), mask, pos_emb
 
