@@ -124,7 +124,7 @@ class LRUBlock(nn.Module):
         hidden_size = args.bert_hidden_units
         self.lru_layer = LRULayer(
             d_model=hidden_size, dropout=args.bert_attn_dropout)
-        self.feed_forward = PositionwiseFeedForward(
+        self.feed_forward = PositionwiseFeedForwardMoE(
             d_model=hidden_size, d_ff=hidden_size*4, dropout=args.bert_dropout)
     
     def forward(self, x, mask):
@@ -192,56 +192,79 @@ class LRULayer(nn.Module):
         return self.layer_norm(x)  # residual connection introduced above 
     
 class SwiGLU(nn.Module):
-    def __init__(self, in_features, out_features):
+    def __init__(self):
         super().__init__()
-        self.linear1 = nn.Linear(in_features, out_features * 2)
-        self.linear2 = nn.Linear(in_features, out_features)
-    
+
     def forward(self, x):
-        hidden_states = self.linear1(x)
-        gate, activated = hidden_states.chunk(2, dim=-1)
-        activated = F.silu(activated)
-        output = self.linear2(gate * activated)
-        return output
+        # x shape: [..., 2 * hidden]
+        x1, x2 = x.chunk(2, dim=-1)
+        return x1 * F.silu(x2)
 
-class NaiveFourierKANLayer(nn.Module):
-    def __init__(self, inputdim, outdim, gridsize=16):
-        super(NaiveFourierKANLayer, self).__init__()
-        self.gridsize = gridsize
-        self.inputdim = inputdim
-        self.outdim = outdim
 
-        self.fouriercoeffs = nn.Parameter(torch.randn(2, outdim, inputdim, gridsize) /
-                                          (np.sqrt(inputdim) * np.sqrt(self.gridsize)))
-    def forward(self, x):
-        xshp = x.shape
-        outshape = xshp[0:-1] + (self.outdim,)
-        x = x.view(-1, self.inputdim)
-        # Starting at 1 because constant terms are in the bias
-        k = torch.reshape(torch.arange(1, self.gridsize + 1, device=x.device), (1, 1, 1, self.gridsize))
-        xrshp = x.view(x.shape[0], 1, x.shape[1], 1)
-        # This should be fused to avoid materializing memory
-        c = torch.cos(k * xrshp)
-        s = torch.sin(k * xrshp)
-        c = torch.reshape(c, (1, x.shape[0], x.shape[1], self.gridsize))
-        s = torch.reshape(s, (1, x.shape[0], x.shape[1], self.gridsize))
-        y = torch.einsum("dbik,djik->bj", torch.concat([c, s], axis=0), self.fouriercoeffs)
-
-        y = y.view(outshape)
-        return y
-
-class PositionwiseFeedForward(nn.Module):
+class MLPExpert(nn.Module):
     def __init__(self, d_model, d_ff, dropout=0.1):
         super().__init__()
-        self.w_1 = NaiveFourierKANLayer(d_model, d_ff * 2)
-        self.w_2 = NaiveFourierKANLayer(d_ff, d_model)
+        # fc1 produces 2*d_ff because SwiGLU splits and uses 2x hidden
+        self.fc1 = nn.Linear(d_model, 2 * d_ff)
+        self.act = SwiGLU()
+        self.fc2 = nn.Linear(d_ff, d_model)
         self.dropout = nn.Dropout(dropout)
         self.layer_norm = nn.LayerNorm(d_model)
 
     def forward(self, x):
-        x_proj = self.w_1(x)  # [B, L, d_ff*2]
-        gate, act = x_proj.chunk(2, dim=-1)
-        act = F.silu(act)
-        x_ = self.dropout(gate * act)
-        x_ = self.dropout(self.w_2(x_))
-        return self.layer_norm(x_ + x)
+        # x: [B, S, D]
+        # return: [B, S, D]
+        x_1 = self.dropout(self.act(self.fc1(x)))
+        x_2 = self.dropout(self.fc2(x_1))
+        return self.layer_norm(x_2 + x)
+
+
+class PositionwiseFeedForwardMoE(nn.Module):
+    def __init__(self, d_model, d_ff, num_experts=3, dropout=0.1):
+        super().__init__()
+        self.num_experts = num_experts
+        self.d_model = d_model
+        self.d_ff = d_ff
+
+        # Router: per-token logits for experts
+        self.router = nn.Linear(d_model, num_experts)
+
+        # Experts
+        self.experts = nn.ModuleList([
+            MLPExpert(d_model, d_ff, dropout=dropout) for _ in range(num_experts)
+        ])
+
+        # Standard components
+        self.softmax = nn.Softmax(dim=-1)
+        self.dropout = nn.Dropout(dropout)
+        self.layer_norm = nn.LayerNorm(d_model)
+
+    def forward(self, x):
+        """
+        x: [B, S, D]
+        returns: [B, S, D]  (residual + layernorm applied inside)
+        """
+        B, S, D = x.shape
+        assert D == self.d_model, f"Expected last dim {self.d_model}, got {D}"
+
+        # Router scores -> gates
+        logits = self.router(x)            # [B, S, E]
+        gates = self.softmax(logits)      # [B, S, E]
+
+        # compute all experts outputs
+        # -> collect as [B, S, E, D]
+        expert_outputs = []
+        for expert in self.experts:
+            out = expert(x)               # [B, S, D]
+            expert_outputs.append(out)
+
+        expert_outputs = torch.stack(expert_outputs, dim=2)  # [B, S, E, D]
+        gates = gates.unsqueeze(-1)                          # [B, S, E, 1]
+
+        # weighted sum across experts
+        moe_out = (expert_outputs * gates).sum(dim=2)        # [B, S, D]
+
+        # residual + dropout + layernorm
+        out = self.dropout(moe_out + x)
+        out = self.layer_norm(out)
+        return out
